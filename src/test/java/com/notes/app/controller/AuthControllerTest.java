@@ -1,5 +1,6 @@
 package com.notes.app.controller;
 
+import com.notes.app.dto.LoginRequest;
 import com.notes.app.dto.RegisterRequest;
 import com.notes.app.dto.UserResponse;
 import com.notes.app.exception.EmailAlreadyExistsException;
@@ -16,18 +17,23 @@ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMock
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.BadCredentialsException;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.LocalDateTime;
 import java.util.Set;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 @WebMvcTest(AuthController.class)
-@AutoConfigureMockMvc(addFilters = false) // Disable security filters to isolate API testing of register endpoint
+@AutoConfigureMockMvc(addFilters = false) // Disable security filters to isolate API testing of endpoint
 class AuthControllerTest {
 
     @Autowired
@@ -38,6 +44,9 @@ class AuthControllerTest {
 
     @MockBean
     private UserService userService;
+
+    @MockBean
+    private AuthenticationManager authenticationManager;
 
     @MockBean
     private JwtTokenProvider tokenProvider;
@@ -53,6 +62,7 @@ class AuthControllerTest {
 
     private RegisterRequest registerRequest;
     private UserResponse userResponse;
+    private LoginRequest loginRequest;
 
     @BeforeEach
     void setUp() {
@@ -69,6 +79,11 @@ class AuthControllerTest {
                 .roles(Set.of("ROLE_USER"))
                 .createdAt(LocalDateTime.now())
                 .updatedAt(LocalDateTime.now())
+                .build();
+
+        loginRequest = LoginRequest.builder()
+                .usernameOrEmail("testuser")
+                .password("password123")
                 .build();
     }
 
@@ -120,5 +135,53 @@ class AuthControllerTest {
                         .content(objectMapper.writeValueAsString(registerRequest)))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value("Email is already registered"));
+    }
+
+    @Test
+    void authenticateUser_Success_ReturnsToken() throws Exception {
+        // Arrange
+        Authentication authentication = mock(Authentication.class);
+        when(authenticationManager.authenticate(any(UsernamePasswordAuthenticationToken.class))).thenReturn(authentication);
+        when(tokenProvider.generateToken(authentication)).thenReturn("mocked-jwt-token");
+
+        // Act & Assert
+        mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(loginRequest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.accessToken").value("mocked-jwt-token"))
+                .andExpect(jsonPath("$.tokenType").value("Bearer"));
+    }
+
+    @Test
+    void authenticateUser_InvalidCredentials_Returns401() throws Exception {
+        // Arrange
+        when(authenticationManager.authenticate(any(UsernamePasswordAuthenticationToken.class)))
+                .thenThrow(new BadCredentialsException("Invalid username or password"));
+
+        // Act & Assert
+        mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(loginRequest)))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.message").value("Invalid username or password"));
+    }
+
+    @Test
+    void authenticateUser_InvalidValidation_Returns400() throws Exception {
+        // Arrange: empty credentials
+        LoginRequest invalidRequest = LoginRequest.builder()
+                .usernameOrEmail("")
+                .password("")
+                .build();
+
+        // Act & Assert
+        mockMvc.perform(post("/api/v1/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(invalidRequest)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Validation Failed"))
+                .andExpect(jsonPath("$.validationErrors.usernameOrEmail").exists())
+                .andExpect(jsonPath("$.validationErrors.password").exists());
     }
 }
